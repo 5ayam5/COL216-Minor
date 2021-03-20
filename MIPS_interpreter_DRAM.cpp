@@ -2,7 +2,6 @@
 // Sayam Sethi 2019CS10399
 // @TODO: initVars function
 // @TODO: row buffer update count
-// @TODO: proper printing
 
 #include <bits/stdc++.h>
 #include <boost/tokenizer.hpp>
@@ -20,7 +19,7 @@ struct MIPS_Architecture
 	vector<vector<string>> commands;
 	vector<int> commandCount;
 	unordered_set<int> registersBuffer;
-	queue<pair<int, array<int, 4>>> DRAM_Buffer;
+	queue<pair<pair<int, array<string, 3>>, array<int, 5>>> DRAM_Buffer;
 
 	// constructor to initialise the instruction set
 	MIPS_Architecture(ifstream &file, int row_delay, int col_delay)
@@ -162,7 +161,7 @@ struct MIPS_Architecture
 		if (address < 0)
 			return abs(address);
 		bufferUpdate(address / ROWS);
-		DRAM_Buffer.push({1, {delay, registerMap[r], address / ROWS, (address % ROWS) / 4}});
+		DRAM_Buffer.push({{1, {"lw", r, location}}, {delay, registerMap[r], address / ROWS, (address % ROWS) / 4, -1}});
 		registersBuffer.insert(registerMap[r]);
 		PCnext = PCcurr + 1;
 		return 0;
@@ -177,7 +176,7 @@ struct MIPS_Architecture
 		if (address < 0)
 			return abs(address);
 		bufferUpdate(address / ROWS);
-		DRAM_Buffer.push({0, {delay, registers[registerMap[r]], address / ROWS, (address % ROWS) / 4}});
+		DRAM_Buffer.push({{0, {"sw", r, location}}, {delay, registers[registerMap[r]], address / ROWS, (address % ROWS) / 4, -1}});
 		PCnext = PCcurr + 1;
 		return 0;
 	}
@@ -407,16 +406,19 @@ struct MIPS_Architecture
 			}
 			while (ret != 0)
 			{
-				++clockCycles;
 				updateRegisterBuffer();
 				ret = instructions[command[0]](*this, command[1], command[2], command[3]);
 			}
-			if (!DRAM_Buffer.empty())
-				if (--DRAM_Buffer.front().second[0] == 0)
-					updateRegisterBuffer();
 			++clockCycles;
 			++commandCount[PCcurr];
 			PCcurr = PCnext;
+			if (!DRAM_Buffer.empty())
+			{
+				if (DRAM_Buffer.front().second[4] == -1)
+					DRAM_Buffer.front().second[4] = clockCycles + 1;
+				else if (--DRAM_Buffer.front().second[0] == 0)
+					updateRegisterBuffer();
+			}
 			printCycleExecution(command);
 		}
 		while (!DRAM_Buffer.empty())
@@ -432,13 +434,25 @@ struct MIPS_Architecture
 		DRAM_Buffer.pop();
 		auto &sec = top.second;
 		clockCycles += sec[0];
-		if (top.first)
+		if (top.first.first)
 		{
 			registers[sec[1]] = data[sec[2]][sec[3]];
 			registersBuffer.erase(sec[1]);
 		}
 		else
 			data[sec[2]][sec[3]] = sec[1];
+		if (DRAM_Buffer.front().second[4] == -1)
+			DRAM_Buffer.front().second[4] = clockCycles + 1;
+		printDRAMCompletion(top.first.second, sec[4], clockCycles);
+	}
+
+	// prints the cycle info of DRAM delay
+	void printDRAMCompletion(array<string, 3> command, int begin, int end)
+	{
+		cout << begin << '-' << end << " (DRAM call executed): ";
+		for (auto s : command)
+			cout << s << ' ';
+		cout << "\n\n";
 	}
 
 	// print cycle info
@@ -447,17 +461,13 @@ struct MIPS_Architecture
 		if (delay == 0)
 		{
 			cout << clockCycles << ": ";
-			for (auto &s : command)
-				cout << s << ' ';
-			cout << '\n';
-			printRegisters();
 		}
 		else
-		{
-			cout << clockCycles << ": DRAM init\n";
-			printRegisters();
-			cout << '\n';
-		}
+			cout << clockCycles << " (DRAM call queued): ";
+		for (auto &s : command)
+			cout << s << ' ';
+		cout << '\n';
+		printRegisters();
 		cout << "\n";
 	}
 
