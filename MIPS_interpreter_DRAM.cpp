@@ -50,6 +50,25 @@ struct MIPS_Architecture
 		commandCount.assign(commands.size(), 0);
 	}
 
+	// perform add immediate operation
+	int addi(string r1, string r2, string num)
+	{
+		if (!checkRegisters({r1, r2}) || registerMap[r1] == 0)
+			return 1;
+		try
+		{
+			if (registerBuffer.first == registerMap[r1] || registerBuffer.first == registerMap[r2])
+				clockCycles = MclockCycles, updateRegisterBuffer();
+			registers[registerMap[r1]] = registers[registerMap[r2]] + stoi(num);
+			PCnext = PCcurr + 1;
+			return 0;
+		}
+		catch (exception &e)
+		{
+			return 4;
+		}
+	}
+
 	// perform add operation
 	int add(string r1, string r2, string r3)
 	{
@@ -154,10 +173,10 @@ struct MIPS_Architecture
 		int address = locateAddress(location);
 		if (address < 0)
 			return abs(address);
+		clockCycles = MclockCycles, updateRegisterBuffer();
 		bufferUpdate(address / ROW);
 		rowBuffer[(address % ROW) / 4] = registers[registerMap[r]];
 		PCnext = PCcurr + 1;
-		clockCycles = MclockCycles, updateRegisterBuffer();
 		return 0;
 	}
 
@@ -208,25 +227,6 @@ struct MIPS_Architecture
 		catch (exception &e)
 		{
 			return -4;
-		}
-	}
-
-	// perform add immediate operation
-	int addi(string r1, string r2, string num)
-	{
-		if (!checkRegisters({r1, r2}) || registerMap[r1] == 0)
-			return 1;
-		try
-		{
-			if (registerBuffer.first == registerMap[r1] || registerBuffer.first == registerMap[r2])
-				clockCycles = MclockCycles, updateRegisterBuffer();
-			registers[registerMap[r1]] = registers[registerMap[r2]] + stoi(num);
-			PCnext = PCcurr + 1;
-			return 0;
-		}
-		catch (exception &e)
-		{
-			return 4;
 		}
 	}
 
@@ -418,7 +418,7 @@ struct MIPS_Architecture
 	// update the register after delay
 	void updateRegisterBuffer()
 	{
-		if (clockCycles > registerBuffer.second)
+		if (clockCycles > registerBuffer.second && registerBuffer.first != -1)
 		{
 			registers[registerBuffer.first] = tempLoad;
 			registerBuffer.first = -1;
