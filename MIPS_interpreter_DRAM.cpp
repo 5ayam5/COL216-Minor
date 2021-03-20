@@ -1,6 +1,5 @@
-// COL216 Assignment 3
-// Sayam Sethi 		2019CS10399
-// Mallika Prabhakar 2019CS50440
+// COL216 Minor
+// Sayam Sethi 2019CS10399
 
 #include <bits/stdc++.h>
 #include <boost/tokenizer.hpp>
@@ -10,17 +9,18 @@ using namespace std;
 // struct to store the registers and the functions to be executed
 struct MIPS_Architecture
 {
-	int registers[32] = {0}, PCcurr = 0, PCnext;
+	int registers[32] = {0}, PCcurr = 0, PCnext, delay, currBuffer = -1;
 	unordered_map<string, function<int(MIPS_Architecture &, string, string, string)>> instructions;
 	unordered_map<string, int> registerMap, address;
-	static const int MAX = (1 << 20);
-	int data[MAX >> 2] = {0};
+	static const int MAX = (1 << 20), ROW = (1 << 10), ROW_ACCESS_DELAY = 10, COL_ACCESS_DELAY = 2;
+	vector<vector<int>> data;
 	vector<vector<string>> commands;
-	vector<int> commandCount;
+	vector<int> commandCount, rowBuffer;
 
 	// constructor to initialise the instruction set
 	MIPS_Architecture(ifstream &file)
 	{
+		data = vector<vector<int>>(ROW, vector<int>(ROW >> 2, 0));
 		instructions = {{"add", &MIPS_Architecture::add}, {"sub", &MIPS_Architecture::sub}, {"mul", &MIPS_Architecture::mul}, {"beq", &MIPS_Architecture::beq}, {"bne", &MIPS_Architecture::bne}, {"slt", &MIPS_Architecture::slt}, {"j", &MIPS_Architecture::j}, {"lw", &MIPS_Architecture::lw}, {"sw", &MIPS_Architecture::sw}, {"addi", &MIPS_Architecture::addi}};
 
 		for (int i = 0; i < 32; ++i)
@@ -128,7 +128,8 @@ struct MIPS_Architecture
 		int address = locateAddress(location);
 		if (address < 0)
 			return abs(address);
-		registers[registerMap[r]] = data[address];
+		bufferUpdate(address / ROW);
+		registers[registerMap[r]] = rowBuffer[(address % ROW) / 4];
 		PCnext = PCcurr + 1;
 		return 0;
 	}
@@ -141,9 +142,26 @@ struct MIPS_Architecture
 		int address = locateAddress(location);
 		if (address < 0)
 			return abs(address);
-		data[address] = registers[registerMap[r]];
+		bufferUpdate(address / ROW);
+		rowBuffer[(address % ROW) / 4] = registers[registerMap[r]];
 		PCnext = PCcurr + 1;
 		return 0;
+	}
+
+	// implement buffer update
+	void bufferUpdate(int row)
+	{
+		if (currBuffer == -1)
+			delay += ROW_ACCESS_DELAY + COL_ACCESS_DELAY, rowBuffer = data[row];
+		else if (currBuffer != row)
+		{
+			delay += 2 * ROW_ACCESS_DELAY + COL_ACCESS_DELAY;
+			data[currBuffer] = rowBuffer;
+			rowBuffer = data[row];
+		}
+		else
+			delay += COL_ACCESS_DELAY;
+		currBuffer = row;
 	}
 
 	int locateAddress(string location)
@@ -160,7 +178,7 @@ struct MIPS_Architecture
 				int address = registers[registerMap[reg]] + offset;
 				if (address % 4 || address < int(4 * commands.size()) || address >= MAX)
 					return -3;
-				return address / 4;
+				return address;
 			}
 			catch (exception &e)
 			{
@@ -172,7 +190,7 @@ struct MIPS_Architecture
 			int address = stoi(location);
 			if (address % 4 || address < int(4 * commands.size()) || address >= MAX)
 				return -3;
-			return address / 4;
+			return address;
 		}
 		catch (exception &e)
 		{
@@ -254,11 +272,17 @@ struct MIPS_Architecture
 				cerr << s << ' ';
 			cerr << '\n';
 		}
+
+		cout << "Exit code: " << code << '\n';
+
+		if (currBuffer != -1)
+			data[currBuffer] = rowBuffer;
 		cout << "\nFollowing are the non-zero data values:\n";
-		for (int i = 0; i < MAX / 4; ++i)
-			if (data[i] != 0)
-				cout << 4 * i << '-' << 4 * i + 3 << hex << ": " << data[i] << '\n'
-					 << dec;
+		for (int i = 0; i < ROW; ++i)
+			for (int j = 0; j < ROW / 4; ++j)
+				if (data[i][j] != 0)
+					cout << (ROW * i + 4 * j) << '-' << (ROW * i + 4 * j) + 3 << hex << ": " << data[i][j] << '\n'
+						 << dec;
 		cout << "\nTotal number of cycles: " << cycleCount << '\n';
 		cout << "Count of instructions executed:\n";
 		for (int i = 0; i < (int)commands.size(); ++i)
@@ -350,36 +374,57 @@ struct MIPS_Architecture
 		}
 
 		int clockCycles = 0;
+		cout << "Cycle info:\n";
 		while (PCcurr < commands.size())
 		{
-			++clockCycles;
+			delay = 1;
 			vector<string> &command = commands[PCcurr];
 			if (instructions.find(command[0]) == instructions.end())
 			{
-				handleExit(4, clockCycles);
+				handleExit(4, clockCycles + delay);
 				return;
 			}
 			int ret = instructions[command[0]](*this, command[1], command[2], command[3]);
 			if (ret != 0)
 			{
-				handleExit(ret, clockCycles);
+				handleExit(ret, clockCycles + delay);
 				return;
 			}
+			printCycleExecution(clockCycles, delay, command);
 			++commandCount[PCcurr];
+			clockCycles += delay;
 			PCcurr = PCnext;
-			printRegisters(clockCycles);
 		}
 		handleExit(0, clockCycles);
 	}
 
-	// print the register data in hexadecimal
-	void printRegisters(int clockCycle)
+	// print cycle info
+	void printCycleExecution(int clockCycle, int delay, vector<string> &command)
 	{
-		cout << "Cycle number: " << clockCycle << '\n'
-			 << hex;
+		if (delay == 1)
+		{
+			cout << clockCycle + 1 << "\t\t";
+			for (auto &s : command)
+				cout << s << ' ';
+		}
+		else
+		{
+			cout << clockCycle + 1 << "\t\tDRAM init\n";
+			cout << clockCycle + 2 << '-' << clockCycle + delay << "\t\t";
+			for (auto &s : command)
+				cout << s << ' ';
+		}
+		cout << "\n";
+		printRegisters();
+	}
+
+	// print the register data in hexadecimal
+	void printRegisters()
+	{
+		cout << hex;
 		for (int i = 0; i < 32; ++i)
 			cout << registers[i] << ' ';
-		cout << dec << '\n';
+		cout << dec << "\n\n";
 	}
 };
 
@@ -387,7 +432,7 @@ int main(int argc, char *argv[])
 {
 	if (argc != 2)
 	{
-		cerr << "Required argument: file_name\n./MIPS_interpreter <file name>\n";
+		cerr << "Required argument: file_name\n./MIPS_interpreter_DRAM <file name>\n";
 		return 0;
 	}
 	ifstream file(argv[1]);
