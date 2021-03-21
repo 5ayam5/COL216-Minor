@@ -1,3 +1,6 @@
+.vscode
+COL216_Minor.*
+!COL216_Minor.tex
+!COL216_Minor.pdf
 MIPS_interpreter_DRAM
 MIPS_interpreter_DRAM_blocking
-.vscode

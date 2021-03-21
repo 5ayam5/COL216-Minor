@@ -9,17 +9,19 @@ using namespace std;
 // struct to store the registers and the functions to be executed
 struct MIPS_Architecture
 {
-	int registers[32] = {0}, PCcurr = 0, PCnext, delay, currBuffer = -1, rowBufferUpdates = 0;
+	int registers[32] = {0}, PCcurr = 0, PCnext, delay, currBuffer = -1, rowBufferUpdates = 0, row_access_delay, col_access_delay;
 	unordered_map<string, function<int(MIPS_Architecture &, string, string, string)>> instructions;
 	unordered_map<string, int> registerMap, address;
-	static const int MAX = (1 << 20), ROW = (1 << 10), ROW_ACCESS_DELAY = 10, COL_ACCESS_DELAY = 2;
+	static const int MAX = (1 << 20), ROW = (1 << 10);
 	vector<vector<int>> data;
 	vector<vector<string>> commands;
 	vector<int> commandCount, rowBuffer;
 
 	// constructor to initialise the instruction set
-	MIPS_Architecture(ifstream &file)
+	MIPS_Architecture(ifstream &file, int row_delay, int col_delay)
 	{
+		row_access_delay = row_delay, col_access_delay = col_delay;
+
 		data = vector<vector<int>>(ROW, vector<int>(ROW >> 2, 0));
 		instructions = {{"add", &MIPS_Architecture::add}, {"sub", &MIPS_Architecture::sub}, {"mul", &MIPS_Architecture::mul}, {"beq", &MIPS_Architecture::beq}, {"bne", &MIPS_Architecture::bne}, {"slt", &MIPS_Architecture::slt}, {"j", &MIPS_Architecture::j}, {"lw", &MIPS_Architecture::lw}, {"sw", &MIPS_Architecture::sw}, {"addi", &MIPS_Architecture::addi}};
 
@@ -154,15 +156,15 @@ struct MIPS_Architecture
 	{
 		++rowBufferUpdates;
 		if (currBuffer == -1)
-			delay += ROW_ACCESS_DELAY + COL_ACCESS_DELAY, rowBuffer = data[row];
+			delay += row_access_delay + col_access_delay, rowBuffer = data[row];
 		else if (currBuffer != row)
 		{
-			delay += 2 * ROW_ACCESS_DELAY + COL_ACCESS_DELAY;
+			delay += 2 * row_access_delay + col_access_delay;
 			data[currBuffer] = rowBuffer;
 			rowBuffer = data[row];
 		}
 		else
-			delay += COL_ACCESS_DELAY, --rowBufferUpdates;
+			delay += col_access_delay, --rowBufferUpdates;
 		currBuffer = row;
 	}
 
@@ -433,15 +435,23 @@ struct MIPS_Architecture
 
 int main(int argc, char *argv[])
 {
-	if (argc != 2)
+	if (argc != 4)
 	{
-		cerr << "Required argument: file_name\n./MIPS_interpreter_DRAM <file name>\n";
+		cerr << "Required arguments: file_name ROW_ACCESS_DELAY COL_ACCESS_DELAY\n";
 		return 0;
 	}
 	ifstream file(argv[1]);
 	MIPS_Architecture *mips;
 	if (file.is_open())
-		mips = new MIPS_Architecture(file);
+		try
+		{
+			mips = new MIPS_Architecture(file, stoi(argv[2]), stoi(argv[3]));
+		}
+		catch (exception &e)
+		{
+			cerr << "Required arguments: file_name ROW_ACCESS_DELAY COL_ACCESS_DELAY\n";
+			return 0;
+		}
 	else
 	{
 		cerr << "File could not be opened. Terminating...\n";
