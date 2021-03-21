@@ -9,21 +9,23 @@ using namespace std;
 // struct to store the registers and the functions to be executed
 struct MIPS_Architecture
 {
-	int registers[32] = {0}, PCcurr = 0, PCnext, delay, currBuffer = -1, MclockCycles, clockCycles, tempLoad, row_access_delay, col_access_delay;
-	pair<int, int> registerBuffer = {-1, -1};
+	// "static" vars
+	static const int MAX = (1 << 20), ROWS = (1 << 10);
+	int row_access_delay, col_access_delay;
 	unordered_map<string, function<int(MIPS_Architecture &, string, string, string)>> instructions;
 	unordered_map<string, int> registerMap, address;
-	static const int MAX = (1 << 20), ROW = (1 << 10);
-	vector<vector<int>> data;
 	vector<vector<string>> commands;
-	vector<int> commandCount, rowBuffer;
+	// "dynamic" vars
+	int registers[32], PCcurr, PCnext, delay, currBuffer, clockCycles, rowBufferUpdates;
+	vector<vector<int>> data;
+	vector<int> commandCount;
+	unordered_set<int> registersBuffer;
+	queue<pair<pair<int, array<string, 3>>, array<int, 5>>> DRAM_Buffer;
 
 	// constructor to initialise the instruction set
 	MIPS_Architecture(ifstream &file, int row_delay, int col_delay)
 	{
 		row_access_delay = row_delay, col_access_delay = col_delay;
-
-		data = vector<vector<int>>(ROW, vector<int>(ROW >> 2, 0));
 
 		instructions = {{"add", &MIPS_Architecture::add}, {"sub", &MIPS_Architecture::sub}, {"mul", &MIPS_Architecture::mul}, {"beq", &MIPS_Architecture::beq}, {"bne", &MIPS_Architecture::bne}, {"slt", &MIPS_Architecture::slt}, {"j", &MIPS_Architecture::j}, {"lw", &MIPS_Architecture::lw}, {"sw", &MIPS_Architecture::sw}, {"addi", &MIPS_Architecture::addi}};
 
@@ -47,7 +49,6 @@ struct MIPS_Architecture
 		registerMap["$ra"] = 31;
 
 		constructCommands(file);
-		commandCount.assign(commands.size(), 0);
 	}
 
 	// perform add immediate operation
@@ -57,8 +58,8 @@ struct MIPS_Architecture
 			return 1;
 		try
 		{
-			if (registerBuffer.first == registerMap[r1] || registerBuffer.first == registerMap[r2])
-				clockCycles = MclockCycles, updateRegisterBuffer();
+			if (registersBuffer.count(registerMap[r1]) || registersBuffer.count(registerMap[r2]))
+				return -1;
 			registers[registerMap[r1]] = registers[registerMap[r2]] + stoi(num);
 			PCnext = PCcurr + 1;
 			return 0;
@@ -92,8 +93,8 @@ struct MIPS_Architecture
 	{
 		if (!checkRegisters({r1, r2, r3}) || registerMap[r1] == 0)
 			return 1;
-		if (registerBuffer.first == registerMap[r1] || registerBuffer.first == registerMap[r2] || registerBuffer.first == registerMap[r3])
-			clockCycles = MclockCycles, updateRegisterBuffer();
+		if (registersBuffer.count(registerMap[r1]) || registersBuffer.count(registerMap[r2]) || registersBuffer.count(registerMap[r3]))
+			return -1;
 		registers[registerMap[r1]] = operation(registers[registerMap[r2]], registers[registerMap[r3]]);
 		PCnext = PCcurr + 1;
 		return 0;
@@ -120,8 +121,8 @@ struct MIPS_Architecture
 			return 2;
 		if (!checkRegisters({r1, r2}))
 			return 1;
-		if (registerBuffer.first == registerMap[r1] || registerBuffer.first == registerMap[r2])
-			clockCycles = MclockCycles, updateRegisterBuffer();
+		if (registersBuffer.count(registerMap[r1]) || registersBuffer.count(registerMap[r2]))
+			return -1;
 		PCnext = comp(registers[registerMap[r1]], registers[registerMap[r2]]) ? address[label] : PCcurr + 1;
 		return 0;
 	}
@@ -131,8 +132,8 @@ struct MIPS_Architecture
 	{
 		if (!checkRegisters({r1, r2, r3}) || registerMap[r1] == 0)
 			return 1;
-		if (registerBuffer.first == registerMap[r1] || registerBuffer.first == registerMap[r2])
-			clockCycles = MclockCycles, updateRegisterBuffer();
+		if (registersBuffer.count(registerMap[r1]) || registersBuffer.count(registerMap[r2]) || registersBuffer.count(registerMap[r3]))
+			return -1;
 		registers[registerMap[r1]] = registers[registerMap[r2]] < registers[registerMap[r3]];
 		PCnext = PCcurr + 1;
 		return 0;
@@ -157,11 +158,10 @@ struct MIPS_Architecture
 		int address = locateAddress(location);
 		if (address < 0)
 			return abs(address);
-		clockCycles = MclockCycles, updateRegisterBuffer();
-		bufferUpdate(address / ROW);
-		tempLoad = rowBuffer[(address % ROW) / 4];
+		bufferUpdate(address / ROWS);
+		DRAM_Buffer.push({{1, {"lw", r, location}}, {delay, registerMap[r], address / ROWS, (address % ROWS) / 4, -1}});
+		registersBuffer.insert(registerMap[r]);
 		PCnext = PCcurr + 1;
-		registerBuffer = {registerMap[r], clockCycles + delay};
 		return 0;
 	}
 
@@ -173,9 +173,9 @@ struct MIPS_Architecture
 		int address = locateAddress(location);
 		if (address < 0)
 			return abs(address);
-		clockCycles = MclockCycles, updateRegisterBuffer();
-		bufferUpdate(address / ROW);
-		rowBuffer[(address % ROW) / 4] = registers[registerMap[r]];
+		bufferUpdate(address / ROWS);
+		DRAM_Buffer.push({{0, {"sw", r, location}}, {delay, registers[registerMap[r]], address / ROWS, (address % ROWS) / 4, -1}});
+		++rowBufferUpdates;
 		PCnext = PCcurr + 1;
 		return 0;
 	}
@@ -183,19 +183,18 @@ struct MIPS_Architecture
 	// implement buffer update
 	void bufferUpdate(int row)
 	{
-		if (currBuffer == -1)
-			delay = row_access_delay + col_access_delay, rowBuffer = data[row];
+		if (row == -1)
+			delay = (currBuffer != -1) * row_access_delay, rowBufferUpdates += (currBuffer != -1);
+		else if (currBuffer == -1)
+			delay = row_access_delay + col_access_delay, ++rowBufferUpdates;
 		else if (currBuffer != row)
-		{
-			delay = 2 * row_access_delay + col_access_delay;
-			data[currBuffer] = rowBuffer;
-			rowBuffer = data[row];
-		}
+			delay = 2 * row_access_delay + col_access_delay, ++rowBufferUpdates;
 		else
 			delay = col_access_delay;
 		currBuffer = row;
 	}
 
+	// parse the address and return the actual address or error
 	int locateAddress(string location)
 	{
 		if (location.back() == ')')
@@ -257,9 +256,8 @@ struct MIPS_Architecture
 		4: syntax error
 		5: commands exceed memory limit
 	*/
-	void handleExit(int code, int cycleCount)
+	void handleExit(int code)
 	{
-		cout << '\n';
 		switch (code)
 		{
 		case 1:
@@ -290,16 +288,15 @@ struct MIPS_Architecture
 
 		cout << "Exit code: " << code << '\n';
 
-		if (currBuffer != -1)
-			data[currBuffer] = rowBuffer;
+		cout << "\nThe Row Buffer was updated " << rowBufferUpdates << " times.\n";
 		cout << "\nFollowing are the non-zero data values:\n";
-		for (int i = 0; i < ROW; ++i)
-			for (int j = 0; j < ROW / 4; ++j)
+		for (int i = 0; i < ROWS; ++i)
+			for (int j = 0; j < ROWS / 4; ++j)
 				if (data[i][j] != 0)
-					cout << (ROW * i + 4 * j) << '-' << (ROW * i + 4 * j) + 3 << hex << ": " << data[i][j] << '\n'
+					cout << (ROWS * i + 4 * j) << '-' << (ROWS * i + 4 * j) + 3 << hex << ": " << data[i][j] << '\n'
 						 << dec;
-		cout << "\nTotal number of cycles: " << cycleCount << '\n';
-		cout << "Count of instructions executed:\n";
+		cout << "\nTotal number of cycles: " << clockCycles << " + " << delay << " (cycles taken for code execution + final writeback delay)\n";
+		cout << "\nCount of instructions executed:\n";
 		for (int i = 0; i < (int)commands.size(); ++i)
 		{
 			cout << commandCount[i] << " times:\t";
@@ -384,11 +381,11 @@ struct MIPS_Architecture
 	{
 		if (commands.size() >= MAX / 4)
 		{
-			handleExit(5, 0);
+			handleExit(5);
 			return;
 		}
 
-		clockCycles = 0, MclockCycles = 0;
+		initVars();
 		cout << "Cycle info:\n";
 		while (PCcurr < commands.size())
 		{
@@ -396,33 +393,65 @@ struct MIPS_Architecture
 			vector<string> &command = commands[PCcurr];
 			if (instructions.find(command[0]) == instructions.end())
 			{
-				handleExit(4, clockCycles);
+				handleExit(4);
 				return;
 			}
 			int ret = instructions[command[0]](*this, command[1], command[2], command[3]);
-			if (ret != 0)
+			if (ret > 0)
 			{
-				handleExit(ret, clockCycles);
+				handleExit(ret);
 				return;
 			}
+			while (ret != 0)
+			{
+				updateRegisterBuffer();
+				ret = instructions[command[0]](*this, command[1], command[2], command[3]);
+			}
 			++clockCycles;
-			MclockCycles = max(MclockCycles, clockCycles + delay);
 			++commandCount[PCcurr];
 			PCcurr = PCnext;
-			updateRegisterBuffer();
+			if (!DRAM_Buffer.empty())
+			{
+				if (DRAM_Buffer.front().second[4] == -1)
+					DRAM_Buffer.front().second[4] = clockCycles + 1;
+				else if (--DRAM_Buffer.front().second[0] == 0)
+					updateRegisterBuffer();
+			}
 			printCycleExecution(command);
 		}
-		handleExit(0, MclockCycles);
+		while (!DRAM_Buffer.empty())
+			updateRegisterBuffer();
+		bufferUpdate(-1);
+		handleExit(0);
 	}
 
-	// update the register after delay
+	// wait and finish DRAM communication
 	void updateRegisterBuffer()
 	{
-		if (clockCycles > registerBuffer.second && registerBuffer.first != -1)
+		assert(!DRAM_Buffer.empty());
+		auto &top = DRAM_Buffer.front();
+		DRAM_Buffer.pop();
+		auto &sec = top.second;
+		clockCycles += sec[0];
+		if (top.first.first)
 		{
-			registers[registerBuffer.first] = tempLoad;
-			registerBuffer.first = -1;
+			registers[sec[1]] = data[sec[2]][sec[3]];
+			registersBuffer.erase(sec[1]);
 		}
+		else
+			data[sec[2]][sec[3]] = sec[1];
+		if (DRAM_Buffer.front().second[4] == -1)
+			DRAM_Buffer.front().second[4] = clockCycles + 1;
+		printDRAMCompletion(top.first.second, sec[4], clockCycles);
+	}
+
+	// prints the cycle info of DRAM delay
+	void printDRAMCompletion(array<string, 3> command, int begin, int end)
+	{
+		cout << begin << '-' << end << " (DRAM call executed): ";
+		for (auto s : command)
+			cout << s << ' ';
+		cout << "\n\n";
 	}
 
 	// print cycle info
@@ -431,20 +460,13 @@ struct MIPS_Architecture
 		if (delay == 0)
 		{
 			cout << clockCycles << ": ";
-			for (auto &s : command)
-				cout << s << ' ';
-			cout << '\n';
-			printRegisters();
 		}
 		else
-		{
-			cout << clockCycles << ": DRAM init\n";
-			printRegisters();
-			cout << clockCycles + 1 << '-' << clockCycles + delay << ": ";
-			for (auto &s : command)
-				cout << s << ' ';
-			cout << '\n';
-		}
+			cout << clockCycles << " (DRAM call queued): ";
+		for (auto &s : command)
+			cout << s << ' ';
+		cout << '\n';
+		printRegisters();
 		cout << "\n";
 	}
 
@@ -455,6 +477,19 @@ struct MIPS_Architecture
 		for (int i = 0; i < 32; ++i)
 			cout << registers[i] << ' ';
 		cout << dec << "\n";
+	}
+
+	// initialize variables before executing commands
+	void initVars()
+	{
+		clockCycles = 0, PCcurr = 0, rowBufferUpdates = 0, currBuffer = -1;
+		fill_n(registers, 32, 0);
+		data = vector<vector<int>>(ROWS, vector<int>(ROWS >> 2, 0));
+		commandCount.clear();
+		commandCount.assign(commands.size(), 0);
+		registersBuffer.clear();
+		while (!DRAM_Buffer.empty())
+			DRAM_Buffer.pop();
 	}
 };
 
