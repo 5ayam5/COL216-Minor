@@ -441,7 +441,7 @@ struct MIPS_Architecture
 		}
 		else
 			data[sec[2]][sec[3]] = sec[1];
-		if (DRAM_Buffer.front().second[4] == -1)
+		if (!DRAM_Buffer.empty())
 			DRAM_Buffer.front().second[4] = clockCycles + 1;
 		printDRAMCompletion(top.first.second, sec[4], clockCycles);
 	}
